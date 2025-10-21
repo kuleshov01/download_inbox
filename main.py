@@ -6,9 +6,14 @@
 
 import os
 import re
-from datetime import datetime, time
-import win32com.client as win32
-from win32com.client import constants
+from datetime import datetime, time, timedelta
+
+try:
+    import win32com.client as win32
+    from win32com.client import constants
+except ImportError:  # pragma: no cover - для сред без Outlook/pywin32
+    win32 = None
+    constants = None
 
 # === ПАРАМЕТРЫ ДЛЯ ВАС ===
 ACCOUNT_SMTP = "scs@sakhalin.gov.ru"
@@ -56,13 +61,34 @@ def dt_range_str(d1: datetime, d2: datetime) -> str:
 def outlook_us_datetime_str(dt: datetime) -> str:
     """
     Преобразует дату в формат США, требуемый для фильтрации в Outlook.
+    Формат строится вручную, чтобы избежать зависимостей от локали.
     
     :param dt: Объект даты и времени
     :return: Строка даты и времени в формате США
     """
     # Outlook Restrict ожидает формат США: MM/DD/YYYY HH:MM AM/PM
-    # Используем формат без секунд, т.к. Outlook может игнорировать секунды в фильтрах
-    return dt.strftime("%m/%d/%Y %I:%M %p")
+    # Формируем вручную, чтобы избежать локализованных обозначений AM/PM
+    hour12 = dt.hour % 12 or 12
+    am_pm = "AM" if dt.hour < 12 else "PM"
+    return f"{dt.month:02d}/{dt.day:02d}/{dt.year:04d} {hour12:02d}:{dt.minute:02d} {am_pm}"
+
+def build_received_time_filter(start_inclusive: datetime, end_inclusive: datetime):
+    """
+    Формирует строку фильтра для Outlook.Items.Restrict и возвращает эксклюзивную верхнюю границу.
+    
+    :param start_inclusive: Начальная дата и время (включительно)
+    :param end_inclusive: Конечная дата и время (включительно)
+    :return: Кортеж (filter_str, end_exclusive)
+    """
+    if start_inclusive > end_inclusive:
+        raise ValueError("start_inclusive must be earlier than or equal to end_inclusive")
+    next_day = (end_inclusive + timedelta(days=1)).date()
+    end_exclusive = datetime.combine(next_day, time(0, 0, 0))
+    filter_str = (
+        f"[ReceivedTime] >= '{outlook_us_datetime_str(start_inclusive)}' AND "
+        f"[ReceivedTime] < '{outlook_us_datetime_str(end_exclusive)}'"
+    )
+    return filter_str, end_exclusive
 
 def get_account_by_smtp(session, smtp_lower: str):
     """
@@ -129,6 +155,9 @@ def main():
     """
     Основная функция для скачивания CSV-вложений из Inbox заданного ящика Outlook за период.
     """
+    if win32 is None:
+        print("Библиотека win32com.client не найдена. Установите pywin32 и запустите на Windows.")
+        return
     # 1) Подключаемся к запущенному Outlook
     outlook = win32.Dispatch("Outlook.Application")
     session = outlook.GetNamespace("MAPI")
@@ -172,7 +201,14 @@ def main():
 
     # 3) Границы времени
     start_dt = datetime.combine(datetime.fromisoformat(DATE_START).date(), time(0, 0, 0))
-    end_dt   = datetime.combine(datetime.fromisoformat(DATE_END).date(),   time(23, 59, 59))
+    end_dt_inclusive = datetime.combine(datetime.fromisoformat(DATE_END).date(), time(23, 59, 59))
+
+    if start_dt > end_dt_inclusive:
+        print(f"Ошибка: DATE_START ({DATE_START}) позже DATE_END ({DATE_END}).")
+        return
+
+    # Формируем фильтр для Restrict и получаем время верхней границы (эксклюзивно)
+    time_filter_str, _ = build_received_time_filter(start_dt, end_dt_inclusive)
     
     # Собираем элементы из всех подходящих папок с применением фильтра по дате каждой папке
     all_filtered_items = []
@@ -184,12 +220,8 @@ def main():
         
         # Restrict по ReceivedTime для текущей папки
         # ВНИМАНИЕ: формат США обязателен
-        filter_str = (
-            f"[ReceivedTime] >= '{outlook_us_datetime_str(start_dt)}' AND "
-            f"[ReceivedTime] <= '{outlook_us_datetime_str(end_dt)}'"
-        )
-        print(f"Фильтр для папки {folder.Name}: {filter_str}")
-        filtered_folder_items = folder_items.Restrict(filter_str)
+        print(f"Фильтр для папки {folder.Name}: {time_filter_str}")
+        filtered_folder_items = folder_items.Restrict(time_filter_str)
         print(f"Найдено писем в папке {folder.Name} в диапазоне дат: {filtered_folder_items.Count}")
         
         # Добавляем элементы из текущей папки в общий список
@@ -202,13 +234,13 @@ def main():
                 recv_dt.year, recv_dt.month, recv_dt.day, recv_dt.hour, recv_dt.minute, recv_dt.second
             )
             
-            if start_dt <= recv_py <= end_dt:
+            if start_dt <= recv_py <= end_dt_inclusive:
                 all_filtered_items.append(item)
             else:
-                print(f" - Письмо '{item.Subject}' от {item.SenderEmailAddress} имеет дату {recv_py}, которая вне диапазона {start_dt} - {end_dt} и будет пропущено")
+                print(f" - Письмо '{item.Subject}' от {item.SenderEmailAddress} имеет дату {recv_py}, которая вне диапазона {start_dt} - {end_dt_inclusive} и будет пропущено")
     
     if not all_filtered_items:
-        print("Не найдено подходящих папок для сканирования")
+        print("Не найдено писем в указанном диапазоне дат")
         return
     
     # Сортируем все собранные элементы по времени получения
@@ -218,7 +250,7 @@ def main():
     filtered = items
 
     # 5) Подготовка папки назначения
-    root_dir = ensure_dir(os.path.join(OUTPUT_DIR, dt_range_str(start_dt, end_dt)))
+    root_dir = ensure_dir(os.path.join(OUTPUT_DIR, dt_range_str(start_dt, end_dt_inclusive)))
 
     saved_files = 0
     scanned_mails = 0
