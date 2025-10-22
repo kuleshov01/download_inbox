@@ -1,0 +1,11 @@
+{
+  "organization_mappings": {
+    "GU OTP Pharmacy": {
+      "ext_id": 3,
+      "name": "Фармация"
+    },
+    "it1@trade65.pro": {
+      "ext_id": null
+    }
+  }
+}
