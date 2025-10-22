@@ -211,33 +211,36 @@ def main():
     time_filter_str, _ = build_received_time_filter(start_dt, end_dt_inclusive)
     
     # Собираем элементы из всех подходящих папок с применением фильтра по дате каждой папке
+    
     all_filtered_items = []
     for folder in all_folders:
-        print(f"Получена папка: {folder.Name} для аккаунта {ACCOUNT_SMTP}")
-        folder_items = folder.Items
-        folder_items.IncludeRecurrences = True
-        folder_items.Sort("[ReceivedTime]", True)  # по убыванию, чтобы быстрее пробегать
-        
-        # Restrict по ReceivedTime для текущей папки
-        # ВНИМАНИЕ: формат США обязателен
-        print(f"Фильтр для папки {folder.Name}: {time_filter_str}")
-        filtered_folder_items = folder_items.Restrict(time_filter_str)
-        print(f"Найдено писем в папке {folder.Name} в диапазоне дат: {filtered_folder_items.Count}")
-        
-        # Добавляем элементы из текущей папки в общий список
-        for i in range(1, filtered_folder_items.Count + 1):
-            item = filtered_folder_items.Item(i)
-            
-            # Дополнительная проверка даты получения для уверенности
-            recv_dt = item.ReceivedTime
-            recv_py = datetime(
-                recv_dt.year, recv_dt.month, recv_dt.day, recv_dt.hour, recv_dt.minute, recv_dt.second
-            )
-            
-            if start_dt <= recv_py <= end_dt_inclusive:
-                all_filtered_items.append(item)
-            else:
-                print(f" - Письмо '{item.Subject}' от {item.SenderEmailAddress} имеет дату {recv_py}, которая вне диапазона {start_dt} - {end_dt_inclusive} и будет пропущено")
+        items = folder.Items
+        # Сортируем по дате получения, новые сверху — так можно рано остановиться
+        items.Sort("[ReceivedTime]", True)
+
+        count = items.Count
+
+        for i in range(1, count + 1):
+            itm = items.Item(i)
+
+            recv_dt = itm.ReceivedTime
+
+            recv_py = datetime(recv_dt.year, recv_dt.month, recv_dt.day,
+                            recv_dt.hour, recv_dt.minute, recv_dt.second)
+
+            # Пропускаем слишком новые (после верхней границы)
+            if recv_py > end_dt_inclusive:
+                continue
+
+            # Если отсортировано по убыванию и мы ушли ниже нижней границы —
+            # дальше только старее, можно прервать цикл по этой папке.
+            if recv_py < start_dt:
+                break
+
+            # В интервале — забираем
+            all_filtered_items.append(itm)
+            #else:
+            #    print(f" - Письмо '{item.Subject}' от {item.SenderEmailAddress} имеет дату {recv_py}, которая вне диапазона {start_dt} - {end_dt_inclusive} и будет пропущено")
     
     if not all_filtered_items:
         print("Не найдено писем в указанном диапазоне дат")
@@ -286,9 +289,9 @@ def main():
         match = re.search(r'^(.+?)\s*<.*>$', sender_name)
         if match:
             sender_name = match.group(1).strip()
+        # Папка по отправителю будет создана позже, если найдутся подходящие вложения
         
         sender_folder_name = sanitize_filename(sender_name)
-        # Папка по отправителю будет создана позже, если найдутся подходящие вложения
         mail_dir = os.path.join(
             root_dir,
             sender_folder_name
