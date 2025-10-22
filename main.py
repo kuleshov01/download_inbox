@@ -15,11 +15,15 @@ except ImportError:  # pragma: no cover - для сред без Outlook/pywin32
     win32 = None
     constants = None
 
+# Загрузка параметров из .env файла
+from dotenv import load_dotenv
+load_dotenv()
+
 # === ПАРАМЕТРЫ ДЛЯ ВАС ===
-ACCOUNT_SMTP = "scs@sakhalin.gov.ru"
-DATE_START = "2025-10-01"  # включительно, локальное время ПК
-DATE_END   = "2025-10-21"  # включительно, локальное время ПК
-OUTPUT_DIR = r"C:\Outlook_CSV_Downloads"  # можно изменить
+ACCOUNT_SMTP = os.getenv("ACCOUNT_SMTP", "scs@sakhalin.gov.ru")
+DATE_START = os.getenv("DATE_START", "2025-10-01")  # включительно, локальное время ПК
+DATE_END   = os.getenv("DATE_END", "2025-10-21")  # включительно, локальное время ПК
+OUTPUT_DIR = os.getenv("OUTPUT_DIR", r"C:\Outlook_CSV_Downloads")  # можно изменить
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 
