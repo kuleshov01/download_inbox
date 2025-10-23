@@ -10,6 +10,7 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+import console_logger
 
 load_dotenv()
 
@@ -822,4 +823,16 @@ def main():
     result = parser.process_directory()
 
 if __name__ == "__main__":
-    main()
+    # Получаем параметры даты из переменных окружения
+    DATE_START = os.getenv("DATE_START", "2025-10-01")
+    DATE_END = os.getenv("DATE_END", "2025-10-21")
+    OUTPUT_DIR = os.getenv("OUTPUT_DIR", r"C:\Outlook_CSV_Downloads")
+    
+    # Запускаем основную функцию с перехватом вывода в лог-файл
+    console_logger.capture_console_output(
+        output_dir=OUTPUT_DIR,
+        date_start=DATE_START,
+        date_end=DATE_END,
+        script_name="transaction_parser",
+        func=main
+    )

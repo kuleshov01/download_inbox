@@ -7,6 +7,12 @@
 import os
 import re
 from datetime import datetime, time, timedelta
+import sys
+from io import StringIO
+import logging
+import os
+from datetime import datetime
+import console_logger
 
 try:
     import win32com.client as win32
@@ -24,6 +30,7 @@ ACCOUNT_SMTP = os.getenv("ACCOUNT_SMTP", "scs@sakhalin.gov.ru")
 DATE_START = os.getenv("DATE_START")  # включительно, локальное время ПК
 DATE_END   = os.getenv("DATE_END")  # включительно, локальное время ПК
 OUTPUT_DIR = os.getenv("OUTPUT_DIR")  # можно изменить
+
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 
@@ -169,15 +176,15 @@ def main():
     # 2) Находим нужный аккаунт/хранилище по SMTP
     acc = get_account_by_smtp(session, ACCOUNT_SMTP.lower())
     if not acc:
-        print(f"Аккаунт с SMTP '{ACCOUNT_SMTP}' не найден среди session.Accounts.")
-        print("Доступные аккаунты:")
+        logging.error(f"Аккаунт с SMTP '{ACCOUNT_SMTP}' не найден среди session.Accounts.")
+        logging.info("Доступные аккаунты:")
         for i in range(1, session.Accounts.Count + 1):
             acc_temp = session.Accounts.Item(i)
-            print(f"  - {acc_temp.SmtpAddress}")
+            logging.info(f"  - {acc_temp.SmtpAddress}")
         return
 
     store = acc.DeliveryStore  # хранилище данного аккаунта
-    print(f"Найден аккаунт: {acc.SmtpAddress}")
+    logging.info(f"Найден аккаунт: {acc.SmtpAddress}")
     
     # Получаем системные папки для определения, какие исключить
     sent_folder = store.GetDefaultFolder(5)  # Отправленные (5)
@@ -420,4 +427,11 @@ def main():
                 print(f"      - {attachment}")
 
 if __name__ == "__main__":
-    main()
+    # Запускаем основную функцию с перехватом вывода в лог-файл
+    console_logger.capture_console_output(
+        output_dir=OUTPUT_DIR,
+        date_start=DATE_START,
+        date_end=DATE_END,
+        script_name="main",
+        func=main
+    )
