@@ -21,9 +21,9 @@ load_dotenv()
 
 # === ПАРАМЕТРЫ ДЛЯ ВАС ===
 ACCOUNT_SMTP = os.getenv("ACCOUNT_SMTP", "scs@sakhalin.gov.ru")
-DATE_START = os.getenv("DATE_START", "2025-10-01")  # включительно, локальное время ПК
-DATE_END   = os.getenv("DATE_END", "2025-10-21")  # включительно, локальное время ПК
-OUTPUT_DIR = os.getenv("OUTPUT_DIR", r"C:\Outlook_CSV_Downloads")  # можно изменить
+DATE_START = os.getenv("DATE_START")  # включительно, локальное время ПК
+DATE_END   = os.getenv("DATE_END")  # включительно, локальное время ПК
+OUTPUT_DIR = os.getenv("OUTPUT_DIR")  # можно изменить
 
 # === ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ===
 

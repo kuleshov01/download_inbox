@@ -1,11 +1,20 @@
 {
   "organization_mappings": {
     "GU OTP Pharmacy": {
-      "ext_id": 3,
+      "token": "Ums7GwTYAzWidOZisNS36sdMmF7jV5m1stTpHAHrz6eJbUyhmqiGcjoGIhvugone63OwgiKrG6OW1mf6",
       "name": "Фармация"
     },
     "it1@trade65.pro": {
-      "ext_id": null
+      "token": "",
+      "name": ""
+    },
+    "MUP 56": {
+      "token": "",
+      "name": ""
+    },
+    "Учебно-тренировочный центр _Восток_": {
+      "token": "",
+      "name": ""
     }
   }
 }

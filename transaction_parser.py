@@ -1,11 +1,14 @@
 import json
 import logging
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("requests").setLevel(logging.WARNING)
 import os
 from datetime import datetime, time
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
+import requests
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -26,11 +29,10 @@ DATE_FORMATS: Tuple[str, ...] = (
     "%Y-%m-%dT%H:%M:%SZ",
     "%Y-%m-%dT%H:%M:%S.%fZ",
 )
-REQUIRED_TRANSACTION_FIELDS: Tuple[str, ...] = ("id_transaction", "card_number", "total_price", "ext_id")
 FOLDER_SUMMARY_WIDTH = 79
 Transaction = Dict[str, Any]
 COLUMN_NAME_CANDIDATES: Dict[str, List[str]] = {
-    "datetime": ["date-time_transaction"],
+    "datetime": ["date-time_transaction", "datetime_transaction"],
     "id_transaction": ["id_transaction"],
     "card_number": ["id_card"],
     "total_price": ["total_price"],
@@ -107,7 +109,7 @@ def print_error(text: str):
     """
     Печатает сообщение об ошибке
     """
-    print(f"[ERROR] {text}")
+    print(f"[ERROR]     {text}")
 
 def print_fail(text: str):
     """
@@ -125,23 +127,23 @@ class TransactionParser:
     """
     Класс для автоматического обнаружения и парсинга CSV и Excel файлов,
     извлечения данных транзакций и отправки их на API endpoint.
-    Поддерживает сопоставление транзакций с организациями по ext_id на основе
+    Поддерживает сопоставление транзакций с организациями по token на основе
     названия папки, в которой находится файл транзакции.
+    
+    
     """
     
     
-    def __init__(self, api_endpoint: str, bearer_token: str, directory_path: str, org_mapping_path: Optional[str] = None) -> None:
+    def __init__(self, api_endpoint: str, directory_path: str, org_mapping_path: Optional[str] = None) -> None:
         """
         Инициализация парсера
         
         Args:
             api_endpoint: URL API endpoint для отправки транзакций
-            bearer_token: Bearer токен для авторизации
             directory_path: Директория для поиска файлов
             org_mapping_path: Путь к файлу сопоставления организаций (опционально)
         """
         self.api_endpoint: str = api_endpoint
-        self.bearer_token: str = bearer_token
         self.directory_path: Path = Path(directory_path)
         self.org_mapping: Dict[str, Any] = self.load_org_mapping(org_mapping_path)
         self.possible_column_names: Dict[str, List[str]] = {
@@ -149,10 +151,9 @@ class TransactionParser:
         }
         # logger.info(f"Инициализирован TransactionParser с параметрами:")
         # logger.info(f"  - API Endpoint: {api_endpoint}")
-        # logger.info(f"  - Bearer Token: {'*' * len(bearer_token) if bearer_token else 'None'}")
         # logger.info(f"  - Directory Path: {self.directory_path}")
-        # logger.info(f"  - Directory Path exists: {self.directory_path.exists()}")
-        # logger.info(f"  - Organization mapping loaded: {len(self.org_mapping) if self.org_mapping else 0} entries")
+        # logger.info(f" - Directory Path exists: {self.directory_path.exists()}")
+        # logger.info(f" - Organization mapping loaded: {len(self.org_mapping) if self.org_mapping else 0} entries")
 
     def load_org_mapping(self, org_mapping_path: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -162,7 +163,7 @@ class TransactionParser:
             org_mapping_path: Путь к файлу сопоставления (опционально)
             
         Returns:
-            Словарь сопоставления названий организаций и их идентификаторов
+            Словарь сопоставления названий организаций их идентификаторов
         """
         path = org_mapping_path or DEFAULT_ORG_MAPPING_PATH
         self._org_mapping_path: str = path
@@ -189,20 +190,20 @@ class TransactionParser:
         logger.error(f"Некорректный формат файла сопоставления организаций: {path}")
         return {}
 
-    def _extract_ext_id(self, org_name: str, org_data: Any) -> Optional[int]:
-        """Возвращает ext_id для записи справочника организаций."""
+    def _extract_token(self, org_name: str, org_data: Any) -> Optional[str]:
+        """Возвращает token для записи справочника организаций."""
         if isinstance(org_data, dict):
-            ext_id = org_data.get("ext_id")
-            if ext_id is None:
+            token = org_data.get("token")
+            if token is None:
                 return None
-            return int(ext_id) if isinstance(ext_id, str) else ext_id
-        if isinstance(org_data, int):
+            return token
+        if isinstance(org_data, str):
             return org_data
 
         print_warning(f"Некорректный формат данных для организации '{org_name}', пропускаем сопоставление")
         return None
 
-    def get_org_id_by_folder_name(self, folder_name: str) -> Optional[int]:
+    def get_org_id_by_folder_name(self, folder_name: str) -> Optional[str]:
         """
         Получение идентификатора организации по названию папки
         
@@ -210,13 +211,13 @@ class TransactionParser:
             folder_name: Название папки (организации)
             
         Returns:
-            Идентификатор организации или None, если не найден
+            Токен организации или None, если не найден
         """
         # Проверяем точное совпадение в сопоставлениях (регистронезависимо)
         folder_name_lower = folder_name.lower()
         for org_name, org_data in self.org_mapping.items():
             if org_name.lower() == folder_name_lower:
-                return self._extract_ext_id(org_name, org_data)
+                return self._extract_token(org_name, org_data)
 
         return None
      
@@ -227,8 +228,8 @@ class TransactionParser:
         """
         if folder_name not in self.org_mapping:
             # Создаем пустую запись для новой папки
-            self.org_mapping[folder_name] = {"ext_id": None}
-            # logger.info(f"Добавлена новая запись в сопоставления для папки '{folder_name}' с пустым ext_id")
+            self.org_mapping[folder_name] = {"token": "", "name": ""}
+            # logger.info(f"Добавлена новая запись в сопоставления для папки '{folder_name}' с пустым token")
             # Сохраняем обновленное сопоставление в файл
             self.save_org_mapping()
     
@@ -313,16 +314,24 @@ class TransactionParser:
         suffix = file_path.suffix.lower()
         if suffix == ".csv":
             delimiter = self._detect_csv_delimiter(file_path)
-            return pd.read_csv(file_path, delimiter=delimiter) if delimiter else pd.read_csv(file_path)
+            # Указываем, что столбцы с идентификаторами должны быть строковыми
+            return pd.read_csv(file_path, delimiter=delimiter, dtype={'id_card': str, 'id_transaction': str}) if delimiter else pd.read_csv(file_path, dtype={'id_card': str, 'id_transaction': str})
         if suffix in (".xlsx", ".xls"):
-            return pd.read_excel(file_path)
+            # Для Excel файлов также укажем типы данных
+            return pd.read_excel(file_path, dtype={'id_card': str, 'id_transaction': str})
         raise ValueError(f"Неподдерживаемый формат файла: {file_path}")
 
     @staticmethod
     def _parse_card_number(card_number: Any, file_path: Path) -> Optional[str]:
         """Проверяет номер карты и возвращает его строковое представление."""
         if pd.notna(card_number) and str(card_number).strip():
-            return str(card_number).strip()
+            card_number_str = str(card_number).strip()
+            # Проверяем, что номер карты состоит из 19 символов и начинается с "9643"
+            if len(card_number_str) == 19 and card_number_str.startswith("9643"):
+                return card_number_str
+            else:
+                print_warning(f"{file_path.name:<50}    Пропускаем транзакцию с некорректным номером карты: {card_number_str}")
+                return None
         print_warning(f"{file_path.name:<50}    Пропускаем транзакцию с пустым номером карты: {card_number}")
         return None
 
@@ -336,21 +345,18 @@ class TransactionParser:
             return None
 
     @staticmethod
-    def _parse_total_discount(total_discount: Any, file_path: Path) -> float:
-        """Преобразует скидку к float, при невозможности возвращает 0.0 с предупреждением."""
-        if total_discount is None or pd.isna(total_discount):
-            return 0.0
+    def _parse_total_discount(total_discount: Any, file_path: Path) -> Optional[float]:
+        """Преобразует цену к float, печатая предупреждение при ошибке."""
         try:
             return float(total_discount)
         except (ValueError, TypeError):
-            print_warning(f"{file_path.name:<50}    Пропускаем скидку с неверным форматом: {total_discount}")
-            return 0.0
+            print_warning(f"{file_path.name:<50}    Пропускаем транзакцию с неверной скидкой: {total_discount}")
+            return None
 
     def _build_transaction(
         self,
         row: pd.Series,
         file_path: Path,
-        ext_id: int,
         datetime_col: Optional[str],
         id_transaction_col: str,
         card_number_col: str,
@@ -358,7 +364,7 @@ class TransactionParser:
         total_discount_col: Optional[str],
     ) -> Transaction:
         """Формирует словарь транзакции на основе строки DataFrame."""
-        transaction: Transaction = {"ext_id": ext_id}
+        transaction: Transaction = {}
 
         if datetime_col:
             transaction["datetime"] = self.normalize_date_format(row[datetime_col])
@@ -375,10 +381,10 @@ class TransactionParser:
             raise TransactionSkip
         transaction["total_price"] = total_price
 
-        if total_discount_col:
-            transaction["total_discount"] = self._parse_total_discount(row[total_discount_col], file_path)
-        else:
-            transaction["total_discount"] = 0.0
+        total_discount = self._parse_total_discount(row[total_discount_col], file_path)
+        if total_discount is None:
+            raise TransactionSkip
+        transaction["total_discount"] = total_discount
 
         return transaction
 
@@ -386,7 +392,6 @@ class TransactionParser:
         self,
         df: pd.DataFrame,
         file_path: Path,
-        ext_id: int,
         datetime_col: Optional[str],
         id_transaction_col: str,
         card_number_col: str,
@@ -403,13 +408,14 @@ class TransactionParser:
                 transaction = self._build_transaction(
                     row,
                     file_path,
-                    ext_id,
                     datetime_col,
                     id_transaction_col,
                     card_number_col,
                     total_price_col,
                     total_discount_col,
                 )
+                extracted_count += 1
+                transactions.append(transaction)  # Добавляем транзакцию в список
             except TransactionSkip:
                 failed_count += 1
                 continue
@@ -418,13 +424,7 @@ class TransactionParser:
                 failed_count += 1
                 continue
 
-            if self.validate_transaction_data(transaction):
-                transactions.append(transaction)
-                extracted_count += 1
-            else:
-                print_warning(f"{file_path.name:<50}    Транзакция не прошла валидацию: {transaction}")
-                failed_count += 1
-
+        # print(f"DEBUG: _extract_transactions - вернули {len(transactions)} транзакций, extracted_count={extracted_count}, failed_count={failed_count}")
         return transactions, extracted_count, failed_count
 
     def normalize_date_format(self, date_value: Any) -> Optional[str]:
@@ -482,55 +482,8 @@ class TransactionParser:
                     #logger.debug(f"Найдена колонка: {col} для имени {name}")
                     return col
         
-        logger.debug(f"Не найдено ни одной из возможных колонок: {possible_names}")
         return None
     
-    def validate_transaction_data(self, transaction: Dict[str, Any]) -> bool:
-        """
-        Валидация данных транзакции
-        
-        Args:
-            transaction: Словарь с данными транзакции
-            
-        Returns:
-            True если данные валидны, иначе False
-        """
-        for field in REQUIRED_TRANSACTION_FIELDS:
-            if field not in transaction or transaction[field] is None:
-                logger.error(f"Отсутствует обязательное поле: {field}")
-                return False
-        
-        # Проверяем формат даты
-        if 'datetime' in transaction and transaction['datetime']:
-            try:
-                datetime.fromisoformat(transaction['datetime'].replace('Z', '+00:00'))
-            except ValueError:
-                logger.error(f"Неверный формат даты: {transaction['datetime']}")
-                return False
-        
-        # Проверяем, что номер карты не пустой
-        card_number = transaction['card_number']
-        if not card_number or str(card_number).strip() == '':
-            logger.error(f"Номер карты пустой: {card_number}")
-            return False
-        
-        # Проверяем, что ext_id - это число
-        try:
-            int(transaction['ext_id'])
-        except (ValueError, TypeError):
-            logger.error(f"Неверный формат ext_id: {transaction.get('ext_id')}")
-            return False
-        
-        # Проверяем, что цены - числа
-        try:
-            float(transaction['total_price'])
-            if 'total_discount' in transaction and transaction['total_discount'] is not None:
-                float(transaction['total_discount'])
-        except (ValueError, TypeError):
-            logger.error(f"Неверный формат цены: {transaction.get('total_price')} или скидки: {transaction.get('total_discount')}")
-            return False
-        
-        return True
     
     def parse_file_detailed(self, file_path: Path, folder_name: str = None) -> tuple:
         """
@@ -548,14 +501,15 @@ class TransactionParser:
             folder_name = file_path.parent.name
         
         self.ensure_org_in_mapping(folder_name)
-        org_id = self.get_org_id_by_folder_name(folder_name)
+        token = self.get_org_id_by_folder_name(folder_name)
 
-        if org_id is None:
-            print_warning(f"{file_path.name:<50}    Не найден идентификатор организации для папки '{folder_name}' или ext_id пустой. Файл будет пропущен.")
+        if token == "":
+            print_warning(f"{file_path.name:<50}    Не найден токен для папки '{folder_name}' или token пустой. Файл будет пропущен.")
             return None, 0, 0
 
         try:
             df = self._read_transaction_file(file_path)
+            # print(f"DEBUG: parse_file_detailed - DataFrame shape: {df.shape}")
         except ValueError as exc:
             logger.error(str(exc))
             return None, 0, 0
@@ -569,15 +523,26 @@ class TransactionParser:
         total_price_col = self.find_column_by_names(df, self.possible_column_names["total_price"])
         total_discount_col = self.find_column_by_names(df, self.possible_column_names["total_discount"])
 
-        if not all([id_transaction_col, card_number_col, total_price_col]):
-            logger.error(f"Не найдены все обязательные колонки в файле {file_path}")
-            logger.error(f"datetime: {datetime_col}, id_transaction: {id_transaction_col}, card_number: {card_number_col}, total_price: {total_price_col}")
+        # print(f"DEBUG: parse_file_detailed - datetime_col: {datetime_col}, id_transaction_col: {id_transaction_col}, card_number_col: {card_number_col}, total_price_col: {total_price_col}, total_discount_col: {total_discount_col}")
+
+        required_cols = {
+            "datetime": datetime_col,
+            "id_transaction": id_transaction_col,
+            "card_number": card_number_col,
+            "total_price": total_price_col,
+            "total_discount": total_discount_col,
+        }
+
+        # Определяем, какие колонки не найдены (значение None или пустое)
+        missing = [name for name, value in required_cols.items() if not value]
+
+        if missing:
+            print_error(f"{file_path.name:<50}    Отсутствуют обязательные колонки: {', '.join(missing)}. см COLUMN_NAME_CANDIDATES")
             return None, 0, 0
 
         transactions, extracted_count, failed_count = self._extract_transactions(
             df,
             file_path,
-            org_id,
             datetime_col,
             id_transaction_col,
             card_number_col,
@@ -587,25 +552,13 @@ class TransactionParser:
 
         return transactions, extracted_count, failed_count
     
-    def parse_file(self, file_path: Path) -> List[Transaction]:
-        """
-        Парсинг CSV или Excel файла и извлечение транзакций (для совместимости)
-        
-        Args:
-            file_path: Путь к файлу
-            
-        Returns:
-            Список транзакций
-        """
-        transactions, _, _ = self.parse_file_detailed(file_path)
-        return transactions if transactions is not None else []
 
-    def _process_folder(self, folder_name: str, folder_files: List[Path]) -> Tuple[List[Transaction], Dict[str, int]]:
-        """Обрабатывает файлы внутри папки и возвращает транзакции и статистику."""
+    def _process_folder(self, folder_name: str, folder_files: List[Path]) -> Tuple[List[Transaction], Dict[str, int], int]:
+        """Обрабатывает файлы внутри папки и возвращает транзакции, статистику и количество успешно отправленных транзакций."""
         print(f"\n{'=' * FOLDER_SUMMARY_WIDTH}")
         print(f"Папка: {folder_name}")
         print(f"{'-' * FOLDER_SUMMARY_WIDTH}")
-
+        
         stats = {
             "processed": 0,
             "success": 0,
@@ -614,17 +567,19 @@ class TransactionParser:
             "failed": 0,
         }
         folder_transactions: List[Transaction] = []
-
+        successful_transactions_count = 0  # Добавляем подсчет успешно отправленных транзакций
+        
         for file_path in folder_files:
             try:
                 transactions, extracted_count, failed_count = self.parse_file_detailed(file_path, folder_name)
-            except Exception as exc:  # noqa: BLE001
+                # print(f"DEBUG: parse_file_detailed вернул {len(transactions) if transactions else 'None'} транзакций, extracted_count={extracted_count}, failed_count={failed_count}")
+            except Exception as exc: # noqa: BLE001
                 print_error(f"{file_path.name:<50}    Ошибка при парсинге файла: {exc}")
                 stats["processed"] += 1
                 stats["errors"] += 1
                 print_fail(f"{file_path.name:<50}    Извлечено: 0   Не извлечено: 0")
                 continue
-
+        
             if transactions is not None:
                 stats["processed"] += 1
                 if extracted_count > 0 or (extracted_count == 0 and failed_count == 0):
@@ -633,7 +588,7 @@ class TransactionParser:
                 else:
                     stats["errors"] += 1
                     print_fail(f"{file_path.name:<50}    Извлечено: {extracted_count:<3}   Не извлечено: {failed_count:<3}")
-
+        
                 stats["extracted"] += extracted_count
                 stats["failed"] += failed_count
                 folder_transactions.extend(transactions)
@@ -641,18 +596,75 @@ class TransactionParser:
                 stats["processed"] += 1
                 stats["errors"] += 1
                 print_fail(f"{file_path.name:<50}    Извлечено: 0   Не извлечено: 0")
+        
+        # Отправляем транзакции для текущей папки
+        if not folder_transactions:
+            print_warning(f"{file_path.name:<50}    Нет транзакций для отправки в папке {folder_name}")
+        else:
+            print_info(f"{file_path.name:<50}    Отправка {len(folder_transactions)} транзакций для папки {folder_name}...")
+            result = self.send_transactions(folder_transactions, folder_name)
+
+            if not result.get('success'):
+                print_error(
+                    f"{file_path.name:<50}    Ошибка при отправке транзакций для папки {folder_name}: "
+                    f"{result.get('error', 'Неизвестная ошибка')} (HTTP {result.get('status_code')})"
+                )
+            else:
+                response = result.get('response')
+                if not isinstance(response, dict) or 'status' not in response:
+                    error_msg = response.get('message') if isinstance(response, dict) else str(response)
+                    print_error(
+                        f"{file_path.name:<50}    Некорректный формат ответа от сервера. "
+                        f"Сообщение: {error_msg}"
+                    )
+                else:
+                    status = response['status']
+                    res = response.get('result') if isinstance(response.get('result'), dict) else {}
+
+                    def _list(x):
+                        return x if isinstance(x, (list, tuple)) else []
+
+                    if status == 0:
+                        print_error(f"{file_path.name:<50}    Ошибка валидации транзакций для папки {folder_name}: статус 0")
+                        for msg in _list((response.get('errors') or {}).get('transactions')):
+                            print_error(f"{file_path.name:<50}    Ошибка: {msg}")
+
+                    elif status in (1, 2):
+                        # Нормализация ключа успехов: для status=1 — 'success', для status=2 — 'successes'
+                        success_ids = _list(res.get('success')) or _list(res.get('successes'))
+                        fail_ids = _list(res.get('fail'))
+                        already_exist_ids = _list(res.get('already_exist'))
+
+                        # Обновляем количество успешно отправленных транзакций
+                        successful_transactions_count = len(success_ids)
+
+                        for item in fail_ids:
+                            print_error(f"{file_path.name:<50}    Ошибка транзакции: {item}")
+                        for item in already_exist_ids:
+                            print_warning(f"{file_path.name:<50}    Транзакция уже существует: {item}")
+
+                        print_info(
+                            f"{file_path.name:<50}    Успешно: {len(success_ids)}, "
+                            f"Ошибок: {len(fail_ids)}, Уже существуют: {len(already_exist_ids)}"
+                        )
+
+                    else:
+                        print_error(
+                            f"{file_path.name:<50}    Неизвестный статус при отправке транзакций для папки {folder_name}: {status}"
+                        )
 
         print(f"{'-' * FOLDER_SUMMARY_WIDTH}")
         print("Итого по папке:")
-        print(f"  Файлов обработано:       {stats['processed']}")
-        print(f"  Успешно:                 {stats['success']}")
-        print(f"  Ошибок:                  {stats['errors']}")
-        print(f"  Извлечено транзакций:    {stats['extracted']}")
-        print(f"  Не извлечено транзакций: {stats['failed']}")
+        print(f" Файлов обработано:       {stats['processed']}")
+        print(f" Успешно:                 {stats['success']}")
+        print(f" Ошибок:                  {stats['errors']}")
+        print(f" Извлечено транзакций:    {stats['extracted']}")
+        print(f" Не извлечено транзакций: {stats['failed']}")
+        print(f" Успешно отправлено транзакций: {successful_transactions_count}") 
 
-        return folder_transactions, stats
+        return folder_transactions, stats, successful_transactions_count
     
-    def send_transactions(self, transactions: List[Transaction]) -> Dict[str, Any]:
+    def send_transactions(self, transactions: List[Transaction], folder_name: str = None) -> Dict[str, Any]:
         """
         Отправка транзакций на API endpoint
         
@@ -662,52 +674,49 @@ class TransactionParser:
         Returns:
             Ответ от API
         """
-        # headers = {
-        #     'Content-Type': 'application/json',
-        #     'Authorization': f'Bearer {self.bearer_token}'
-        # }
-        #
-        # payload = {
-        #     'transactions': transactions
-        # }
-        #
-        # try:
-        #     response = requests.post(self.api_endpoint, json=payload, headers=headers)
-        #     response.raise_for_status()
-        #     logger.info(f"Успешно отправлено {len(transactions)} транзакций")
-        #     return {
-        #         'success': True,
-        #         'status_code': response.status_code,
-        #         'response': response.json()
-        #     }
-        # except requests.exceptions.HTTPError as e:
-        #     logger.error(f"HTTP ошибка при отправке транзакций: {e}")
-        #     return {
-        #         'success': False,
-        #         'status_code': response.status_code if 'response' in locals() else None,
-        #         'error': str(e),
-        #         'response': response.text if 'response' in locals() else None
-        #     }
-        # except requests.exceptions.RequestException as e:
-        #     logger.error(f"Ошибка при отправке транзакций: {e}")
-        #     return {
-        #         'success': False,
-        #         'error': str(e)
-        #     }
-        # except Exception as e:
-        #     logger.error(f"Неизвестная ошибка при отправке транзакций: {e}")
-        #     return {
-        #         'success': False,
-        #         'error': str(e)
-        #     }
         
-        # Заглушка вместо отправки HTTP - просто возвращаем успешный результат без отправки
-        print_info(f"Отправка {len(transactions)} транзакций пропущена (HTTP-запрос закомментирован)")
-        return {
-            'success': True,
-            'status_code': 200,
-            'response': {'message': 'Transactions processed (mock response)', 'count': len(transactions)}
+        token = self.get_org_id_by_folder_name(folder_name)
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'Authorization': f'Bearer {token}',
+            'User-Agent': 'PostmanRuntime/7.48.0'
         }
+    
+        payload = {
+            'transactions': transactions
+        }
+    
+        try:
+            response = requests.post(self.api_endpoint, json=payload, headers=headers)
+            response.raise_for_status()
+            # logger.info(f"Успешно отправлено {len(transactions)} транзакций")
+            return {
+                'success': True,
+                'status_code': response.status_code,
+                'response': response.json()
+            }
+        except requests.exceptions.HTTPError as e:
+            logger.error(f"HTTP ошибка при отправке транзакций: {e}")
+            return {
+                'success': False,
+                'status_code': response.status_code if 'response' in locals() else None,
+                'error': str(e),
+                'response': response.text if 'response' in locals() else None
+            }
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Ошибка при отправке транзакций: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+        except Exception as e:
+            logger.error(f"Неизвестная ошибка при отправке транзакций: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
     
     def process_directory(self) -> Dict[str, Any]:
         """
@@ -727,10 +736,13 @@ class TransactionParser:
         
         folder_stats: Dict[str, Dict[str, int]] = {}
         
+        total_successful_transactions = 0  # Добавляем подсчет успешно отправленных транзакций
+        
         for folder_name, folder_files in files_by_folder.items():
-            folder_transactions, stats = self._process_folder(folder_name, folder_files)
+            folder_transactions, stats, successful_count = self._process_folder(folder_name, folder_files)
             all_transactions.extend(folder_transactions)
             folder_stats[folder_name] = stats
+            total_successful_transactions += successful_count # Суммируем успешно отправленные транзакции
         
         print(f"\n{'=' * FOLDER_SUMMARY_WIDTH}")
         print("ОБЩИЙ ИТОГ:")
@@ -749,24 +761,19 @@ class TransactionParser:
         print(f"Ошибок:                   {total_errors}")
         print(f"Извлечено транзакций:     {total_extracted}")
         print(f"Не извлечено транзакций:  {total_failed}")
+        print(f"Успешно отправлено транзакций: {total_successful_transactions}")  # Добавляем вывод успешно отправленных транзакций
         print(f"{'=' * FOLDER_SUMMARY_WIDTH}")
-        
-        if all_transactions:
-            print_success("Транзакции успешно извлечены, готовим к отправке...")
-            result = self.send_transactions(all_transactions)
-            result['total_processed_files'] = total_success + total_errors
-            result['total_skipped_files'] = total_errors
-            result['total_transactions_extracted'] = total_extracted
-            return result
-        else:
-            print_warning("Не найдено транзакций для отправки")
-            return {
-                'success': True,
-                'total_processed_files': total_success + total_errors,
-                'total_skipped_files': total_errors,
-                'total_transactions_extracted': 0,
-                'message': 'No transactions found to send'
-            }
+         
+        # Убрана повторная отправка транзакций, так как они уже отправлены в _process_folder
+        print_success("Обработка завершена. Транзакции были отправлены по папкам.")
+        return {
+            'success': True,
+            'total_processed_files': total_success + total_errors,
+            'total_skipped_files': total_errors,
+            'total_transactions_extracted': total_extracted,
+            'total_successful_transactions': total_successful_transactions,  # Добавляем общее количество успешно отправленных транзакций возвращаемый результат
+            'message': 'Transactions processed and sent by folder'
+        }
 
 
 def main():
@@ -774,8 +781,7 @@ def main():
     Пример использования
     """
     # Параметры для подключения к API
-    API_ENDPOINT = os.getenv('API_ENDPOINT', 'http://localhost:8000/api/v2/uploadTransactions')
-    BEARER_TOKEN = os.getenv('BEARER_TOKEN', 'your_token_here')
+    API_ENDPOINT = os.getenv('API_ENDPOINT')
     
     # Загружаем параметры даты и OUTPUT_DIR для формирования DIRECTORY_PATH
     DATE_START = os.getenv("DATE_START", "2025-10-01")  # включительно, локальное время ПК
@@ -784,8 +790,6 @@ def main():
     
     # Проверяем, задан ли DIRECTORY_PATH в .env файле
     DIRECTORY_PATH = os.getenv("DIRECTORY_PATH")
-    # logger.info(f"Значение DIRECTORY_PATH из .env: {DIRECTORY_PATH}")
-    # logger.info(f"Значения DATE_START: {DATE_START}, DATE_END: {DATE_END}, OUTPUT_DIR: {OUTPUT_DIR}")
     
     if DIRECTORY_PATH is None:
         # Если DIRECTORY_PATH не задан, вычисляем путь на основе дат
@@ -794,14 +798,10 @@ def main():
         
         # Формируем DIRECTORY_PATH как OUTPUT_DIR + диапазон дат
         calculated_path = os.path.join(OUTPUT_DIR, dt_range_str(start_dt, end_dt_inclusive))
-        # logger.info(f"Вычисленный путь к директории: {calculated_path}")
         DIRECTORY_PATH = ensure_dir(calculated_path)
     else:
         # Если DIRECTORY_PATH задан, используем его как есть
-        # logger.info(f"Используем DIRECTORY_PATH из .env: {DIRECTORY_PATH}")
         DIRECTORY_PATH = ensure_dir(DIRECTORY_PATH)
-    
-    # logger.info(f"Финальный путь к директории: {DIRECTORY_PATH}")
     
     # Загружаем путь к файлу сопоставления организаций из .env
     ORG_MAPPING_PATH = os.getenv("ORG_MAPPING_PATH")
@@ -815,7 +815,6 @@ def main():
     
     parser = TransactionParser(
         api_endpoint=API_ENDPOINT,
-        bearer_token=BEARER_TOKEN,
         directory_path=DIRECTORY_PATH,
         org_mapping_path=ORG_MAPPING_PATH
     )
