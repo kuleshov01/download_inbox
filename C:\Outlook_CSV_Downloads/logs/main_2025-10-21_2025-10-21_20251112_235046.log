@@ -1,0 +1,3 @@
+[console_logger] Логи сохраняются в: C:\Outlook_CSV_Downloads/logs/main_2025-10-21_2025-10-21_20251112_235046.log
+Библиотека win32com.client не найдена. Установите pywin32 и запустите на Windows.
+[console_logger] Выполнение 'main' завершено.
